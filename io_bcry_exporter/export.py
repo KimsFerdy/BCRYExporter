@@ -29,10 +29,10 @@ import os
 import subprocess
 import threading
 import time
+from time import process_time
 import xml.dom.minidom
 from collections import OrderedDict
 from datetime import datetime
-from time import perf_counter as clock
 from xml.dom.minidom import Document, Element, parse, parseString
 
 import bmesh
@@ -108,13 +108,11 @@ class CrytekDaeExporter:
         author_name = self._doc.createTextNode('Blender User')
         author.appendChild(author_name)
         author_tool = self._doc.createElement('authoring_tool')
-        author_name_text = self._doc.createTextNode(
-            'BCry v{}'.format(self._config.bcry_version))
+        author_name_text = self._doc.createTextNode('BCry v{}'.format(self._config.bcry_version))
         author_tool.appendChild(author_name_text)
         contributor.appendChild(author_tool)
         created = self._doc.createElement('created')
-        created_value = self._doc.createTextNode(
-            datetime.now().isoformat(' '))
+        created_value = self._doc.createTextNode(datetime.now().isoformat(' '))
         created.appendChild(created_value)
         asset.appendChild(created)
         modified = self._doc.createElement('modified')
@@ -127,6 +125,10 @@ class CrytekDaeExporter:
         z_up = self._doc.createTextNode('Z_UP')
         up_axis.appendChild(z_up)
         asset.appendChild(up_axis)
+        # Write scene frame rate to metadata, so CryEngine Resource Compiler can read it
+        scene_framerate = self._doc.createElement('scene_frame_rate')
+        scene_framerate.setAttribute('samples_per_second', '{:f}'.format(bpy.context.scene.render.fps / bpy.context.scene.render.fps_base))
+        asset.appendChild(scene_framerate)
 
     # ------------------------------------------------------------------
     # Library Cameras:
@@ -197,30 +199,30 @@ class CrytekDaeExporter:
                 print()
                 bcPrint('"{}" object is being processed...'.format(object_.name))
 
-                start_time = clock()
+                start_time = process_time()
                 self._write_positions(bmesh_, mesh_node, geometry_name)
-                bcPrint('Positions have been writed {:.4f} seconds.'.format(clock() - start_time))
+                bcPrint('Positions have been writed {:.4f} seconds.'.format(process_time() - start_time))
 
-                start_time = clock()
+                start_time = process_time()
                 self._write_normals(object_, bmesh_, mesh_node, geometry_name)
-                bcPrint('Normals have been writed {:.4f} seconds.'.format(clock() - start_time))
+                bcPrint('Normals have been writed {:.4f} seconds.'.format(process_time() - start_time))
 
-                start_time = clock()
+                start_time = process_time()
                 self._write_uvs(object_, bmesh_, mesh_node, geometry_name)
-                bcPrint('UVs have been writed {:.4f} seconds.'.format(clock() - start_time))
+                bcPrint('UVs have been writed {:.4f} seconds.'.format(process_time() - start_time))
 
-                start_time = clock()
+                start_time = process_time()
                 self._write_vertex_colors(object_, bmesh_, mesh_node, geometry_name)
-                bcPrint('Vertex colors have been writed {:.4f} seconds.'.format(clock() - start_time))
+                bcPrint('Vertex colors have been writed {:.4f} seconds.'.format(process_time() - start_time))
 
-                start_time = clock()
+                start_time = process_time()
                 self._write_vertices(mesh_node, geometry_name)
-                bcPrint('Vertices have been writed {:.4f} seconds.'.format(clock() - start_time))
+                bcPrint('Vertices have been writed {:.4f} seconds.'.format(process_time() - start_time))
 
-                start_time = clock()
+                start_time = process_time()
                 self._write_triangle_list(
                     object_, bmesh_, mesh_node, geometry_name)
-                bcPrint('Triangle list have been writed {:.4f} seconds.'.format(clock() - start_time))
+                bcPrint('Triangle list have been writed {:.4f} seconds.'.format(process_time() - start_time))
 
                 extra = self._create_double_sided_extra("MAYA")
                 mesh_node.appendChild(extra)
@@ -240,28 +242,26 @@ class CrytekDaeExporter:
         mesh_node.appendChild(source)
 
     def _write_normals(self, object_, bmesh_, mesh_node, geometry_name):
-        split_angle = 0
+        # If true, will split if angle > split angle
         use_edge_angle = False
+        split_angle = 0
+        # If true, will respect edges marked as sharp
         use_edge_sharp = False
 
-        if object_.data.use_auto_smooth:
-            use_edge_angle = True
-            use_edge_sharp = True
-            split_angle = object_.data.auto_smooth_angle
-        else:
-            for modifier in object_.modifiers:
-                if modifier.type == 'EDGE_SPLIT' and modifier.show_viewport:
-                    use_edge_angle = modifier.use_edge_angle
-                    use_edge_sharp = modifier.use_edge_sharp
-                    split_angle = modifier.split_angle
+        # CAUTION: "Smooth by Angle" modifier (an "Essential" library geometry node actually, not normal modifier) does not take effect during export, so only find 'EDGE_SPLIT' type modifiers
+        # On start export, get_mesh() will call bcry_split_modifier() to replace "Smooth by Angle" modifier with an 'EDGE_SPLIT' modifier with same settings, so here we only need to check 'EDGE_SPLIT' modifiers
+        for modifier in object_.modifiers:
+            if modifier.type == 'EDGE_SPLIT' and modifier.show_viewport:
+                use_edge_angle |= modifier.use_edge_angle
+                use_edge_sharp |= modifier.use_edge_sharp
+                split_angle = modifier.split_angle
+                break
 
         float_normals = None
         if self._config.custom_normals:
-            float_normals = utils.get_custom_normals(bmesh_, use_edge_angle,
-                                                     split_angle)
+            float_normals = utils.get_custom_normals(bmesh_, use_edge_angle, split_angle)
         else:
-            float_normals = utils.get_normal_array(bmesh_, use_edge_angle,
-                                                   use_edge_sharp, split_angle)
+            float_normals = utils.get_normal_array(bmesh_, use_edge_angle, use_edge_sharp, split_angle)
 
         id_ = "{!s}-normal".format(geometry_name)
         source = utils.write_source(id_, "float", float_normals, "XYZ")
@@ -300,6 +300,10 @@ class CrytekDaeExporter:
                     float_colors.extend([1.0, 1.0, 1.0, alpha_color])
             else:
                 for vert in bmesh_.verts:
+                    # Warning and skip loose verts
+                    if( len(vert.link_loops) == 0 ):
+                        bcPrint(f"Error: vert {vert.index} has no link_loops! Clean mesh (CleanUp/DeleteLoose) and try again!", 'error')
+                        continue
                     loop = vert.link_loops[0]
                     color = loop[active_layer]
                     float_colors.extend([color[0], color[1], color[2]])
@@ -458,7 +462,8 @@ class CrytekDaeExporter:
         joints.appendChild(input)
         input = utils.write_input(id_, None, "matrices", "INV_BIND_MATRIX")
         joints.appendChild(input)
-        skin_node.appendChild(joints)
+        skin_node.appendChild(joints)    
+
 
     def _process_bone_joints(self, object_, armature, skin_node, group):
         bones = utils.get_bones(armature)
@@ -901,8 +906,17 @@ class CrytekDaeExporter:
                 prop = self._doc.createTextNode("DoNotMerge")
                 properties.appendChild(prop)
 
-            prop = self._doc.createTextNode("UseCustomNormals")
-            properties.appendChild(prop)
+            if self._config.custom_normals:
+                prop = self._doc.createTextNode("UseCustomNormals")
+                properties.appendChild(prop)
+
+            if self._config.use_f32_vertex_format:
+                prop = self._doc.createTextNode("UseF32VertexFormat")
+                properties.appendChild(prop)
+
+            if self._config.eight_weights_per_vertex:
+                prop = self._doc.createTextNode("EightWeightsPerVertex")
+                properties.appendChild(prop)
 
             if self._config.vcloth_pre_process and node_type == 'skin':
                 prop = self._doc.createTextNode("VClothPreProcess")
@@ -911,8 +925,11 @@ class CrytekDaeExporter:
             prop = self._doc.createTextNode("CustomExportPath=")
             properties.appendChild(prop)
         else:
-            if not node.rna_type.id_data.items():
-                return
+            # # TODO: Handle case when node is not an export node
+            # # node.rna_type.id_data.items() always false as id_data none since Blender 4.5 LTS
+            # # Should use object_.keys() to iterate custom properties
+            # if not node.rna_type.id_data.items():
+            return
 
         technique.appendChild(properties)
 
@@ -968,14 +985,14 @@ class CrytekDaeExporter:
 
     def _create_user_defined_property(self, object_):
         udp_buffer = ""
-        for prop in object_.rna_type.id_data.items():
-            if prop:
-                prop_name = prop[0]
-                if udp.is_user_defined_property(prop_name):
-                    if isinstance(prop[1], str):
-                        udp_buffer += "{!s}\n".format(prop[1])
+        for key in object_.keys():
+            if key not in "_RNA_UI":
+                prop = object_[key]
+                if udp.is_user_defined_property(key):
+                    if isinstance(prop, str):
+                        udp_buffer += "{!s}\n".format(prop)
                     else:
-                        udp_buffer += "{!s}={!s}\n".format(prop[0], prop[1])
+                        udp_buffer += "{!s}={!s}\n".format(key, prop)
 
         if udp_buffer or utils.is_dummy(object_):
             extra = self._doc.createElement("extra")

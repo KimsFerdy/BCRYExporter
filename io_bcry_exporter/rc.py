@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import multiprocessing
 
 from .outpipe import bcPrint
 
@@ -60,7 +61,7 @@ class _DAEConverter:
         dae_path = utils.get_absolute_path_for_rc(filepath)
 
         if not self.__config.disable_rc:
-            rc_params = ["/verbose", "/threads=processors", "/refresh"]
+            rc_params = ["/verbose", "/threads={processors}".format(processors = multiprocessing.cpu_count()), "/refresh"]
             if self.__config.vcloth_pre_process:
                 rc_params.append("/wait=0 /forceVCloth")
 
@@ -308,7 +309,7 @@ class _TIFConverter:
             bpy.data.images.remove(temp_normal_image)
 
     def __get_rc_params(self, destination_path):
-        rc_params = ["/verbose", "/threads=cores", "/userdialog=1", "/refresh"]
+        rc_params = ["/verbose", "/threads={processors}".format(processors=multiprocessing.cpu_count()), "/refresh"]
 
         image_directory = os.path.dirname(utils.get_absolute_path_for_rc(
             destination_path))
