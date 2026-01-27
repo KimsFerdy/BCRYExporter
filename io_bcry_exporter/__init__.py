@@ -245,23 +245,31 @@ class BCRY_OT_add_cry_export_node(bpy.types.Operator):
         if not object_:
             self.report({'ERROR'}, "No active object selected!")
             return {'CANCELLED'}
+        
         if object_.type not in ('MESH', 'EMPTY'):
-            self.report({'ERROR'}, "Selected object is not a mesh!")
+            self.report({'ERROR'}, "Selected object is not a mesh or empty!")
             return {'CANCELLED'}
+        
         self.node_name = object_.name
         self.node_type = 'cgf'
-        if object_.parent and object_.parent.type == 'ARMATURE':
-            if len(object_.data.vertices) <= 4:
-                self.node_type = 'chr'
-                self.node_name = object_.parent.name
-            else:
-                self.node_type = 'skin'
-        elif object_.animation_data:
+        
+        # ✅ SAFE: Only access .data.vertices for MESH objects
+        if object_.type == 'MESH':
+            if object_.parent and object_.parent.type == 'ARMATURE':
+                if len(object_.data.vertices) <= 4:
+                    self.node_type = 'chr'
+                    self.node_name = object_.parent.name
+                else:
+                    self.node_type = 'skin'
+            elif object_.animation_data:
+                self.node_type = 'cga'
+        # EMPTYs stay as 'cgf' (or 'cga' if animated)
+        elif object_.type == 'EMPTY' and object_.animation_data:
             self.node_type = 'cga'
-
+    
         return context.window_manager.invoke_props_dialog(self)
-
-
+    
+    
 class BCRY_OT_add_cry_animation_node(bpy.types.Operator):
     '''Add animation node to selected armature or object'''
     bl_label = "Add Animation Node"
